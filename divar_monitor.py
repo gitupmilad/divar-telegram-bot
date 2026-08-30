@@ -1,16 +1,11 @@
 import requests
 import json
 
-url = "https://api.divar.ir/v8/web-search/isfahan/car"
+url = "https://api.divar.ir/v8/postlist/w/search"
 
 payload = {
-    "json_schema": {
-        "category": {
-            "value": "car"
-        }
-    },
-    "last-post-date": 0,
-    "page": 1
+    "city_ids": ["3"],
+    "categories": ["light"]
 }
 
 headers = {
