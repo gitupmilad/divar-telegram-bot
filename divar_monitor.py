@@ -1,16 +1,26 @@
+```python
 import os
 import re
+import json
 import statistics
 import time
 
 import requests
 
 
+# =========================
+# تنظیمات
+# =========================
+
 SEARCH_URL = "https://api.divar.ir/v8/postlist/w/search"
 DETAIL_URL = "https://api.divar.ir/v8/posts-v2/web/{}"
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+
+CITY_ID = "4"  # اصفهان
+
+SEARCH_QUERY = "تیبا 2 مدل 1400"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -21,28 +31,56 @@ HEADERS = {
 }
 
 
+# =========================
+# ابزارهای کمکی
+# =========================
+
 def normalize(text):
-    if not text:
+    """تبدیل اعداد فارسی و عربی و یکسان‌سازی متن"""
+
+    if text is None:
         return ""
 
-    table = str.maketrans(
-        "۰۱۲۳۴۵۶۷۸۹",
-        "0123456789"
+    text = str(text)
+
+    replacements = str.maketrans(
+        "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+        "01234567890123456789"
     )
 
-    return (
-        str(text)
-        .translate(table)
+    text = text.translate(replacements)
+
+    text = (
+        text
         .replace("ي", "ی")
         .replace("ك", "ک")
+        .replace("\u200c", " ")
+        .replace("ـ", "")
         .lower()
     )
 
+    return text
+
+
+def json_to_text(obj):
+    try:
+        return json.dumps(
+            obj,
+            ensure_ascii=False
+        )
+    except Exception:
+        return str(obj)
+
 
 def send_telegram(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    """ارسال پیام به تلگرام"""
 
-    r = requests.post(
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/sendMessage"
+    )
+
+    response = requests.post(
         url,
         json={
             "chat_id": CHAT_ID,
@@ -52,13 +90,19 @@ def send_telegram(text):
         timeout=30,
     )
 
-    r.raise_for_status()
+    response.raise_for_status()
 
+    print("Telegram message sent.")
+
+
+# =========================
+# جستجوی دیوار
+# =========================
 
 def search_divar():
 
     payload = {
-        "city_ids": ["4"],
+        "city_ids": [CITY_ID],
 
         "search_data": {
             "form_data": {
@@ -68,16 +112,19 @@ def search_divar():
                             "value": "ROOT"
                         }
                     },
+
                     "query": {
                         "str": {
-                            "value": "تیبا 2 مدل 1400"
+                            "value": SEARCH_QUERY
                         }
                     }
                 }
             },
 
             "server_payload": {
-                "@type": "type.googleapis.com/widgets.SearchData.ServerPayload",
+                "@type":
+                    "type.googleapis.com/widgets.SearchData.ServerPayload",
+
                 "additional_form_data": {
                     "data": {
                         "sort": {
@@ -91,124 +138,241 @@ def search_divar():
         }
     }
 
-    r = requests.post(
+    response = requests.post(
         SEARCH_URL,
         json=payload,
         headers=HEADERS,
         timeout=30,
     )
 
-    print("Divar search status:", r.status_code)
+    print(
+        "Divar search status:",
+        response.status_code
+    )
 
-    r.raise_for_status()
+    response.raise_for_status()
 
-    return r.json()
+    return response.json()
 
 
-def get_posts(data):
+# =========================
+# استخراج آگهی‌ها
+# =========================
+
+def extract_posts(data):
 
     posts = []
 
-    for widget in data.get("list_widgets", []):
+    for widget in data.get(
+        "list_widgets",
+        []
+    ):
 
-        if widget.get("widget_type") != "POST_ROW":
+        if widget.get(
+            "widget_type"
+        ) != "POST_ROW":
+
             continue
 
-        item = widget.get("data", {})
-        action = item.get("action", {})
-        payload = action.get("payload", {})
+        item = widget.get(
+            "data",
+            {}
+        )
 
-        token = payload.get("token")
+        action = item.get(
+            "action",
+            {}
+        )
+
+        payload = action.get(
+            "payload",
+            {}
+        )
+
+        token = payload.get(
+            "token"
+        )
 
         if not token:
             continue
 
+        web_info = payload.get(
+            "web_info",
+            {}
+        )
+
         posts.append({
-            "title": item.get("title", ""),
-            "price_text": item.get(
-                "middle_description_text",
-                ""
-            ),
-            "location": item.get(
-                "bottom_description_text",
-                ""
-            ),
-            "token": token,
+
+            "title":
+                item.get(
+                    "title",
+                    ""
+                ),
+
+            "price_text":
+                item.get(
+                    "middle_description_text",
+                    ""
+                ),
+
+            "location":
+                item.get(
+                    "bottom_description_text",
+                    ""
+                ),
+
+            "time_text":
+                item.get(
+                    "top_description_text",
+                    ""
+                ),
+
+            "token":
+                token,
+
+            "district":
+                web_info.get(
+                    "district_persian",
+                    ""
+                ),
+
+            "city":
+                web_info.get(
+                    "city_persian",
+                    "اصفهان"
+                ),
+
+            "image_url":
+                item.get(
+                    "image_url",
+                    ""
+                ),
+
+            "image_count":
+                item.get(
+                    "image_count",
+                    0
+                ),
         })
 
     return posts
 
 
+# =========================
+# جزئیات آگهی
+# =========================
+
 def get_details(token):
 
-    url = DETAIL_URL.format(token)
+    url = DETAIL_URL.format(
+        token
+    )
 
     try:
-        r = requests.get(
+
+        response = requests.get(
             url,
             headers=HEADERS,
             timeout=30,
         )
 
-        if r.status_code != 200:
+        if response.status_code != 200:
+
             print(
-                f"Detail request failed: {token} "
-                f"HTTP {r.status_code}"
+                f"Detail HTTP "
+                f"{response.status_code}: "
+                f"{token}"
             )
+
             return {}
 
-        return r.json()
+        return response.json()
 
-    except Exception as e:
+    except Exception as error:
 
         print(
-            f"Detail error for {token}: {e}"
+            f"Detail error "
+            f"{token}: {error}"
         )
 
         return {}
 
 
-def contains_model_1400(obj):
-
-    text = normalize(obj)
-
-    patterns = [
-        r"\b1400\b",
-        r"مدل\s*1400",
-        r"سال\s*1400",
-        r"تیبا\s*2\s*مدل\s*1400",
-        r"تیبا\s*۲\s*مدل\s*۱۴۰۰",
-    ]
-
-    return any(
-        re.search(pattern, text)
-        for pattern in patterns
-    )
-
+# =========================
+# تشخیص تیبا ۲
+# =========================
 
 def is_tiba_2(text):
 
     text = normalize(text)
 
+    # تیبا پلاس را جدا می‌کنیم
+    if re.search(
+        r"تیبا\s*پلاس",
+        text
+    ):
+        return False
+
     patterns = [
         r"تیبا\s*2",
         r"تیبا\s*۲",
         r"tiba\s*2",
+        r"تیبا\s*دو",
     ]
 
     return any(
-        re.search(pattern, text)
+        re.search(
+            pattern,
+            text
+        )
         for pattern in patterns
     )
 
 
+# =========================
+# تشخیص مدل ۱۴۰۰
+# =========================
+
+def is_model_1400(text):
+
+    text = normalize(text)
+
+    patterns = [
+
+        r"مدل\s*1400",
+
+        r"سال\s*1400",
+
+        r"تیبا\s*2\s*مدل\s*1400",
+
+        r"تیبا\s*۲\s*مدل\s*1400",
+
+        r"تیبا\s*دو\s*مدل\s*1400",
+
+        r"\b1400\b",
+    ]
+
+    return any(
+        re.search(
+            pattern,
+            text
+        )
+        for pattern in patterns
+    )
+
+
+# =========================
+# استخراج قیمت
+# =========================
+
 def extract_price(text):
+
+    text = normalize(text)
 
     if not text:
         return None
 
-    text = normalize(text)
-
+    # قیمت‌های چندبخشی
     numbers = re.findall(
         r"\d[\d,]*",
         text
@@ -217,229 +381,527 @@ def extract_price(text):
     if not numbers:
         return None
 
-    try:
+    # بزرگ‌ترین عدد را در نظر می‌گیریم
+    values = []
 
-        value = int(
-            numbers[0].replace(",", "")
-        )
+    for number in numbers:
 
-    except ValueError:
+        try:
 
+            value = int(
+                number.replace(
+                    ",",
+                    ""
+                )
+            )
+
+            if value >= 100_000_000:
+                values.append(
+                    value
+                )
+
+        except ValueError:
+            pass
+
+    if not values:
         return None
 
-    # قیمت‌های خودرو در Divar معمولاً تومان هستند.
-    # تبدیل به میلیون تومان
-    if value >= 100_000_000:
-        return value / 1_000_000
+    return max(values)
+
+
+# =========================
+# استخراج کارکرد
+# =========================
+
+def extract_mileage(obj):
+
+    text = normalize(
+        json_to_text(obj)
+    )
+
+    patterns = [
+
+        r"کارکرد.{0,30}?(\d[\d,]*)",
+
+        r"کارکرد.{0,30}?(\d+)\s*کیلومتر",
+
+        r"(\d[\d,]*)\s*کیلومتر",
+
+        r"(\d[\d,]*)\s*km",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            text
+        )
+
+        if match:
+
+            value = (
+                match.group(1)
+                .replace(",", "")
+            )
+
+            try:
+
+                return int(value)
+
+            except ValueError:
+
+                pass
 
     return None
 
 
+# =========================
+# استخراج زمان آگهی
+# =========================
+
+def extract_time(post, details):
+
+    candidates = [
+
+        post.get(
+            "time_text",
+            ""
+        ),
+
+        post.get(
+            "location",
+            ""
+        ),
+
+        json_to_text(details),
+    ]
+
+    for candidate in candidates:
+
+        text = normalize(
+            candidate
+        )
+
+        patterns = [
+
+            r"لحظاتی پیش",
+
+            r"دقایقی پیش",
+
+            r"\d+\s*دقیقه پیش",
+
+            r"\d+\s*ساعت پیش",
+
+            r"دیروز",
+
+            r"پریروز",
+
+            r"\d+\s*روز پیش",
+
+            r"هفته",
+        ]
+
+        for pattern in patterns:
+
+            match = re.search(
+                pattern,
+                text
+            )
+
+            if match:
+                return match.group(0)
+
+    return "نامشخص"
+
+
+# =========================
+# فرمت قیمت
+# =========================
+
+def format_price(value):
+
+    if value is None:
+        return "نامشخص"
+
+    million = value / 1_000_000
+
+    if million.is_integer():
+
+        return (
+            f"{int(million):,} "
+            f"میلیون تومان"
+        )
+
+    return (
+        f"{million:,.1f} "
+        f"میلیون تومان"
+    )
+
+
+# =========================
+# فرمت کارکرد
+# =========================
+
+def format_mileage(value):
+
+    if value is None:
+        return "نامشخص"
+
+    return (
+        f"{value:,} کیلومتر"
+    )
+
+
+# =========================
+# ساخت لینک
+# =========================
+
+def post_url(token):
+
+    return (
+        "https://divar.ir/v/"
+        + token
+    )
+
+
+# =========================
+# اصلی
+# =========================
+
 def main():
 
-    print("================================")
-    print("Divar Tiba 2 Model 1400 Monitor")
-    print("================================")
+    print()
+    print(
+        "===================================="
+    )
+    print(
+        "Divar Tiba 2 Model 1400 Monitor"
+    )
+    print(
+        "===================================="
+    )
 
-    print("Searching Divar...")
+    print(
+        "Searching Divar..."
+    )
 
     data = search_divar()
 
-    posts = get_posts(data)
+    posts = extract_posts(
+        data
+    )
 
     print(
-        "Search results:",
+        "Total search results:",
         len(posts)
     )
 
-    matches = []
+    all_results = []
 
     for index, post in enumerate(
         posts,
         1
     ):
 
-        title = post["title"]
-
         print(
-            f"[{index}/{len(posts)}] {title}"
+            f"[{index}/{len(posts)}] "
+            f"{post['title']}"
         )
 
-        # ابتدا عنوان را بررسی می‌کنیم
-        title_is_tiba = is_tiba_2(title)
-        title_is_1400 = contains_model_1400(
-            title
+        details = get_details(
+            post["token"]
         )
 
-        # اگر عنوان کاملاً منطبق بود
-        if title_is_tiba and title_is_1400:
-
-            details = {}
-
-        else:
-
-            # جزئیات آگهی را می‌گیریم
-            details = get_details(
-                post["token"]
+        # متن کامل آگهی
+        full_text = (
+            normalize(
+                post["title"]
             )
-
-        # متن کامل برای بررسی
-        detail_text = normalize(
-            json_to_text(details)
-        )
-
-        # بررسی تیبا 2
-        tiba_match = (
-            title_is_tiba
-            or is_tiba_2(detail_text)
-        )
-
-        # بررسی مدل 1400
-        model_match = (
-            title_is_1400
-            or contains_model_1400(
-                detail_text
+            + " "
+            + normalize(
+                json_to_text(details)
             )
         )
 
-        if not tiba_match:
-            print("  -> Not Tiba 2")
+        # فیلتر تیبا ۲
+        if not is_tiba_2(
+            full_text
+        ):
+
+            print(
+                "  -> Not Tiba 2"
+            )
+
             continue
 
-        if not model_match:
-            print("  -> Not Model 1400")
+        # فیلتر مدل ۱۴۰۰
+        if not is_model_1400(
+            full_text
+        ):
+
+            print(
+                "  -> Not Model 1400"
+            )
+
             continue
 
         price = extract_price(
             post["price_text"]
         )
 
-        if not price:
+        # اگر قیمت از ردیف پیدا نشد
+        if price is None:
 
-            print(
-                "  -> Price not found"
+            price = extract_price(
+                json_to_text(
+                    details
+                )
             )
 
-            continue
+        mileage = extract_mileage(
+            details
+        )
 
-        matches.append({
-            "title": title,
-            "price": price,
-            "location": post["location"],
-            "token": post["token"],
-            "url": (
-                "https://divar.ir/v/"
-                + post["token"]
-            ),
-        })
+        time_text = extract_time(
+            post,
+            details
+        )
+
+        district = (
+            post.get(
+                "district"
+            )
+            or post.get(
+                "location"
+            )
+            or "نامشخص"
+        )
+
+        result = {
+
+            "title":
+                post["title"],
+
+            "price":
+                price,
+
+            "mileage":
+                mileage,
+
+            "district":
+                district,
+
+            "time":
+                time_text,
+
+            "token":
+                post["token"],
+
+            "url":
+                post_url(
+                    post["token"]
+                ),
+        }
+
+        all_results.append(
+            result
+        )
 
         print(
-            f"  -> MATCH: "
-            f"{price:,.0f} million"
+            "  -> MATCH"
+        )
+
+        print(
+            "     Price:",
+            format_price(price)
+        )
+
+        print(
+            "     Mileage:",
+            format_mileage(mileage)
         )
 
         time.sleep(0.2)
 
     print()
     print(
-        "MATCHING POSTS:",
-        len(matches)
+        "FILTERED RESULTS:",
+        len(all_results)
     )
 
-    # اگر نتیجه‌ای نبود
-    if not matches:
+    # =========================
+    # آمار کل نتایج
+    # =========================
 
-        message = (
-            "🚗 گزارش دیوار\n\n"
-            "📍 اصفهان\n"
-            "🚘 تیبا ۲ مدل ۱۴۰۰\n\n"
-            "❌ امروز آگهی منطبق "
-            "با فیلتر پیدا نشد."
-        )
-
-        send_telegram(message)
-
-        print(
-            "No matching posts."
-        )
-
-        return
-
-    # قیمت‌ها
-    prices = [
-        item["price"]
-        for item in matches
+    priced_results = [
+        item
+        for item in all_results
+        if item["price"] is not None
     ]
 
-    average = statistics.mean(
-        prices
-    )
+    if priced_results:
 
-    median = statistics.median(
-        prices
-    )
+        prices = [
+            item["price"]
+            for item in priced_results
+        ]
 
-    minimum = min(prices)
-    maximum = max(prices)
+        minimum = min(
+            prices
+        )
 
-    # مرتب‌سازی از ارزان به گران
-    matches.sort(
-        key=lambda x: x["price"]
-    )
+        maximum = max(
+            prices
+        )
 
-    message = (
-        "🚗 گزارش روزانه بازار خودرو\n\n"
+        average = statistics.mean(
+            prices
+        )
+
+        median = statistics.median(
+            prices
+        )
+
+    else:
+
+        minimum = None
+        maximum = None
+        average = None
+        median = None
+
+    # =========================
+    # گزارش
+    # =========================
+
+    header = (
+        "🚗 گزارش بازار خودرو\n\n"
         "📍 اصفهان\n"
         "🚘 تیبا ۲ مدل ۱۴۰۰\n\n"
         "━━━━━━━━━━━━━━\n\n"
-        f"🔎 تعداد آگهی: "
-        f"{len(matches)}\n\n"
-        f"💰 میانگین قیمت: "
-        f"{average:,.0f} میلیون تومان\n"
-        f"📊 میانه قیمت: "
-        f"{median:,.0f} میلیون تومان\n"
-        f"⬇️ کمترین قیمت: "
-        f"{minimum:,.0f} میلیون تومان\n"
-        f"⬆️ بیشترین قیمت: "
-        f"{maximum:,.0f} میلیون تومان\n\n"
-        "━━━━━━━━━━━━━━\n\n"
-        "📋 آگهی‌های منطبق:\n\n"
+        f"🔎 تعداد کل آگهی‌های "
+        f"منطبق: {len(all_results)}\n"
+        f"💵 دارای قیمت: "
+        f"{len(priced_results)}\n\n"
     )
 
-    for i, item in enumerate(
-        matches[:15],
+    if priced_results:
+
+        header += (
+            "📊 آمار کل نتایج\n\n"
+            f"⬇️ کمترین قیمت: "
+            f"{format_price(minimum)}\n"
+            f"⬆️ بیشترین قیمت: "
+            f"{format_price(maximum)}\n"
+            f"💰 میانگین قیمت: "
+            f"{format_price(average)}\n"
+            f"📊 میانه قیمت: "
+            f"{format_price(median)}\n\n"
+            "━━━━━━━━━━━━━━\n\n"
+        )
+
+    else:
+
+        header += (
+            "❌ برای آگهی‌های منطبق "
+            "قیمت قابل محاسبه پیدا نشد.\n\n"
+            "━━━━━━━━━━━━━━\n\n"
+        )
+
+    header += (
+        "📋 تمام آگهی‌های منطبق:\n\n"
+    )
+
+    # =========================
+    # اضافه کردن تمام آگهی‌ها
+    # =========================
+
+    messages = []
+
+    current_message = header
+
+    for index, item in enumerate(
+        all_results,
         1
     ):
 
-        message += (
-            f"{i}. "
-            f"{item['price']:,.0f} میلیون تومان\n"
-            f"🚘 {item['title']}\n"
-            f"📍 {item['location']}\n"
+        price_text = format_price(
+            item["price"]
+        )
+
+        mileage_text = format_mileage(
+            item["mileage"]
+        )
+
+        block = (
+            f"{index}. 🚘 "
+            f"{item['title']}\n"
+            f"💰 قیمت: "
+            f"{price_text}\n"
+            f"🛣 کارکرد: "
+            f"{mileage_text}\n"
+            f"📍 {item['district']}\n"
+            f"⏰ {item['time']}\n"
             f"🔗 {item['url']}\n\n"
         )
 
-    send_telegram(message)
+        # محدودیت تلگرام حدود 4096 کاراکتر است
+        if (
+            len(current_message)
+            + len(block)
+            > 3800
+        ):
 
-    print(
-        "Report successfully sent "
-        "to Telegram."
-    )
+            messages.append(
+                current_message
+            )
 
+            current_message = (
+                "📋 ادامه آگهی‌ها:\n\n"
+            )
 
-def json_to_text(obj):
+        current_message += block
 
-    if not obj:
-        return ""
+    if current_message.strip():
 
-    try:
-        return json.dumps(
-            obj,
-            ensure_ascii=False
+        messages.append(
+            current_message
         )
-    except Exception:
-        return str(obj)
+
+    # =========================
+    # ارسال
+    # =========================
+
+    if not messages:
+
+        send_telegram(
+            "🚗 گزارش دیوار\n\n"
+            "📍 اصفهان\n"
+            "🚘 تیبا ۲ مدل ۱۴۰۰\n\n"
+            "❌ هیچ آگهی منطبقی پیدا نشد."
+        )
+
+    else:
+
+        for message in messages:
+
+            send_telegram(
+                message
+            )
+
+            time.sleep(1)
+
+    print()
+    print(
+        "===================================="
+    )
+    print(
+        "REPORT COMPLETED"
+    )
+    print(
+        "===================================="
+    )
 
 
 if __name__ == "__main__":
     main()
+```
