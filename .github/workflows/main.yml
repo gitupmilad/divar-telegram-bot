@@ -1,13 +1,10 @@
-name: Daily Divar Tiba 2 Monitor
+name: Divar API Test
 
 on:
   workflow_dispatch:
-  schedule:
-    # 06:00 UTC = 09:30 Iran
-    - cron: "0 6 * * *"
 
 jobs:
-  monitor:
+  test-divar-api:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,12 +16,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: |
-          pip install requests
+      - name: Install requests
+        run: pip install requests
 
-      - name: Run Divar monitor
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      - name: Test Divar API
         run: python divar_monitor.py
