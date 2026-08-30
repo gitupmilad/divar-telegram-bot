@@ -1,4 +1,3 @@
-
 import os
 import re
 import json
@@ -8,9 +7,9 @@ import time
 import requests
 
 
-# =========================
+# ============================================================
 # تنظیمات
-# =========================
+# ============================================================
 
 SEARCH_URL = "https://api.divar.ir/v8/postlist/w/search"
 DETAIL_URL = "https://api.divar.ir/v8/posts-v2/web/{}"
@@ -18,9 +17,25 @@ DETAIL_URL = "https://api.divar.ir/v8/posts-v2/web/{}"
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-CITY_ID = "4"  # اصفهان
+# اصفهان
+CITY_ID = "4"
 
+# عبارت جستجوی اصلی
 SEARCH_QUERY = "تیبا 2 مدل 1400"
+
+# حداکثر تعداد نتایج برای بررسی
+# None یعنی همه نتایج برگشتی Divar بررسی شوند.
+MAX_RESULTS = None
+
+# محدوده منطقی قیمت خودرو
+# قیمت‌ها به ریال هستند.
+MIN_VALID_PRICE = 100_000_000
+MAX_VALID_PRICE = 5_000_000_000
+
+# محدوده منطقی کارکرد
+MIN_VALID_MILEAGE = 0
+MAX_VALID_MILEAGE = 1_000_000
+
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -31,12 +46,14 @@ HEADERS = {
 }
 
 
-# =========================
-# ابزارهای کمکی
-# =========================
+# ============================================================
+# ابزارهای عمومی
+# ============================================================
 
 def normalize(text):
-    """تبدیل اعداد فارسی و عربی و یکسان‌سازی متن"""
+    """
+    تبدیل اعداد فارسی/عربی به انگلیسی و یکسان‌سازی متن.
+    """
 
     if text is None:
         return ""
@@ -72,8 +89,52 @@ def json_to_text(obj):
         return str(obj)
 
 
+def clean_number(value):
+    """
+    تبدیل عدد فارسی/عربی/رشته‌ای به int یا float.
+    """
+
+    if value is None:
+        return None
+
+    text = normalize(value)
+
+    text = (
+        text
+        .replace(",", "")
+        .replace("٬", "")
+        .replace("٫", ".")
+        .strip()
+    )
+
+    match = re.search(
+        r"-?\d+(?:\.\d+)?",
+        text
+    )
+
+    if not match:
+        return None
+
+    try:
+        number = float(match.group(0))
+
+        if number.is_integer():
+            return int(number)
+
+        return number
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# تلگرام
+# ============================================================
+
 def send_telegram(text):
-    """ارسال پیام به تلگرام"""
+    """
+    ارسال پیام به تلگرام.
+    """
 
     url = (
         f"https://api.telegram.org/"
@@ -90,23 +151,37 @@ def send_telegram(text):
         timeout=30,
     )
 
+    if not response.ok:
+        print("Telegram HTTP status:", response.status_code)
+        print("Telegram response:", response.text)
+
     response.raise_for_status()
+
+    result = response.json()
+
+    if not result.get("ok"):
+        raise RuntimeError(
+            f"Telegram API error: {result}"
+        )
 
     print("Telegram message sent.")
 
 
-# =========================
-# جستجوی دیوار
-# =========================
+# ============================================================
+# جستجوی Divar
+# ============================================================
 
 def search_divar():
 
     payload = {
-        "city_ids": [CITY_ID],
+        "city_ids": [
+            CITY_ID
+        ],
 
         "search_data": {
             "form_data": {
                 "data": {
+
                     "category": {
                         "str": {
                             "value": "ROOT"
@@ -155,23 +230,24 @@ def search_divar():
     return response.json()
 
 
-# =========================
-# استخراج آگهی‌ها
-# =========================
+# ============================================================
+# استخراج آگهی‌های جستجو
+# ============================================================
 
 def extract_posts(data):
 
     posts = []
 
-    for widget in data.get(
+    widgets = data.get(
         "list_widgets",
         []
-    ):
+    )
+
+    for widget in widgets:
 
         if widget.get(
             "widget_type"
         ) != "POST_ROW":
-
             continue
 
         item = widget.get(
@@ -209,6 +285,7 @@ def extract_posts(data):
                     ""
                 ),
 
+            # این مقدار منبع اصلی قیمت است
             "price_text":
                 item.get(
                     "middle_description_text",
@@ -258,9 +335,9 @@ def extract_posts(data):
     return posts
 
 
-# =========================
+# ============================================================
 # جزئیات آگهی
-# =========================
+# ============================================================
 
 def get_details(token):
 
@@ -298,15 +375,15 @@ def get_details(token):
         return {}
 
 
-# =========================
+# ============================================================
 # تشخیص تیبا ۲
-# =========================
+# ============================================================
 
 def is_tiba_2(text):
 
     text = normalize(text)
 
-    # تیبا پلاس را جدا می‌کنیم
+    # تیبا پلاس نباید جزو نتایج باشد
     if re.search(
         r"تیبا\s*پلاس",
         text
@@ -314,34 +391,45 @@ def is_tiba_2(text):
         return False
 
     patterns = [
+
         r"تیبا\s*2",
+
         r"تیبا\s*۲",
+
         r"tiba\s*2",
+
         r"تیبا\s*دو",
     ]
 
-    return any(
-        re.search(
+    for pattern in patterns:
+
+        if re.search(
             pattern,
             text
-        )
-        for pattern in patterns
-    )
+        ):
+            return True
+
+    return False
 
 
-# =========================
+# ============================================================
 # تشخیص مدل ۱۴۰۰
-# =========================
+# ============================================================
 
 def is_model_1400(text):
 
     text = normalize(text)
 
+    # حالت‌های مختلف نوشتن مدل 1400
     patterns = [
 
         r"مدل\s*1400",
 
+        r"مدل\s*۱۴۰۰",
+
         r"سال\s*1400",
+
+        r"سال\s*۱۴۰۰",
 
         r"تیبا\s*2\s*مدل\s*1400",
 
@@ -349,69 +437,244 @@ def is_model_1400(text):
 
         r"تیبا\s*دو\s*مدل\s*1400",
 
+        r"تیبا\s*2\s*مدل\s*۱۴۰۰",
+
+        r"تیبا\s*۲\s*مدل\s*۱۴۰۰",
+
+        r"تیبا\s*دو\s*مدل\s*۱۴۰۰",
+
         r"\b1400\b",
     ]
 
-    return any(
-        re.search(
+    for pattern in patterns:
+
+        if re.search(
             pattern,
             text
-        )
-        for pattern in patterns
-    )
+        ):
+            return True
+
+    return False
 
 
-# =========================
-# استخراج قیمت
-# =========================
+# ============================================================
+# استخراج قیمت از متن نتیجه جستجو
+# ============================================================
 
-def extract_price(text):
+def extract_price_from_search_text(text):
+
+    """
+    فقط از متن قیمت خود POST_ROW قیمت را استخراج می‌کنیم.
+
+    نکته مهم:
+    قبلاً کل JSON جزئیات آگهی به این تابع داده می‌شد
+    و بزرگ‌ترین عدد به عنوان قیمت انتخاب می‌شد.
+    این باعث خطای 776,138.9 میلیون شده بود.
+
+    این تابع فقط قیمت‌های مشخص‌شده در متن نتیجه جستجو را
+    قبول می‌کند.
+    """
+
+    if text is None:
+        return None
 
     text = normalize(text)
 
     if not text:
         return None
 
-    # قیمت‌های چندبخشی
+    # آگهی‌هایی که قیمت ندارند
+    invalid_words = [
+        "توافقی",
+        "رایگان",
+        "معاوضه",
+        "نامشخص",
+        "none",
+    ]
+
+    for word in invalid_words:
+
+        if word in text:
+            return None
+
+    # حذف کلمات غیرعددی
     numbers = re.findall(
-        r"\d[\d,]*",
+        r"\d+(?:,\d+)*(?:\.\d+)?",
         text
     )
 
     if not numbers:
         return None
 
-    # بزرگ‌ترین عدد را در نظر می‌گیریم
-    values = []
+    candidates = []
 
     for number in numbers:
 
-        try:
+        value = clean_number(
+            number
+        )
 
-            value = int(
-                number.replace(
-                    ",",
-                    ""
-                )
+        if value is None:
+            continue
+
+        # اگر متن بر اساس میلیون نوشته شده باشد
+        if "میلیون" in text:
+
+            value = float(value) * 1_000_000
+
+        # اگر میلیارد باشد
+        elif "میلیارد" in text:
+
+            value = float(value) * 1_000_000_000
+
+        # اگر قیمت مستقیم ریالی باشد
+        else:
+
+            # اعداد خیلی کوچک احتمالاً قیمت نیستند
+            if value < 1_000_000:
+                continue
+
+        value = int(value)
+
+        if (
+            MIN_VALID_PRICE
+            <= value
+            <= MAX_VALID_PRICE
+        ):
+            candidates.append(
+                value
             )
 
-            if value >= 100_000_000:
-                values.append(
-                    value
-                )
-
-        except ValueError:
-            pass
-
-    if not values:
+    if not candidates:
         return None
 
-    return max(values)
+    # در متن قیمت، آخرین مقدار معتبر را برمی‌گردانیم
+    return candidates[-1]
 
 
-# =========================
+# ============================================================
+# استخراج قیمت از فیلدهای صریح JSON
+# ============================================================
+
+def extract_price_from_explicit_fields(obj):
+
+    """
+    فقط فیلدهایی که نامشان به قیمت مربوط است بررسی می‌شوند.
+
+    هرگز کل JSON را به صورت عددی اسکن نمی‌کنیم.
+    """
+
+    price_keys = {
+        "price",
+        "pricevalue",
+        "price_value",
+        "amount",
+        "amountvalue",
+        "amount_value",
+        "value",
+    }
+
+    results = []
+
+    def walk(value, parent_key=""):
+
+        if isinstance(value, dict):
+
+            for key, child in value.items():
+
+                key_normalized = normalize(key)
+                key_normalized = (
+                    key_normalized
+                    .replace("_", "")
+                    .replace("-", "")
+                )
+
+                # فقط فیلدهایی که در مسیر قیمت هستند
+                is_price_key = (
+                    key_normalized in price_keys
+                    or "price" in key_normalized
+                    or "amount" in key_normalized
+                )
+
+                if is_price_key:
+
+                    numeric = clean_number(
+                        child
+                    )
+
+                    if numeric is not None:
+
+                        # بعضی APIها مقدار را میلیون یا ریال می‌دهند.
+                        # فقط مقادیر منطقی را قبول می‌کنیم.
+
+                        numeric = float(
+                            numeric
+                        )
+
+                        if (
+                            MIN_VALID_PRICE
+                            <= numeric
+                            <= MAX_VALID_PRICE
+                        ):
+                            results.append(
+                                int(numeric)
+                            )
+
+                        # اگر مقدار به میلیون باشد
+                        elif (
+                            100
+                            <= numeric
+                            <= 5000
+                        ):
+                            results.append(
+                                int(
+                                    numeric
+                                    * 1_000_000
+                                )
+                            )
+
+                walk(
+                    child,
+                    key_normalized
+                )
+
+        elif isinstance(value, list):
+
+            for child in value:
+
+                walk(
+                    child,
+                    parent_key
+                )
+
+    walk(obj)
+
+    if not results:
+        return None
+
+    # اگر چند مقدار قیمت وجود داشت،
+    # مقداری را که در محدوده منطقی خودرو است انتخاب می‌کنیم.
+    valid = [
+        value
+        for value in results
+        if (
+            MIN_VALID_PRICE
+            <= value
+            <= MAX_VALID_PRICE
+        )
+    ]
+
+    if not valid:
+        return None
+
+    # نزدیک‌ترین مقدار به محدوده معمول خودرو
+    # در این پروژه بزرگ‌ترین مقدار معتبر معمولاً قیمت نهایی است.
+    return max(valid)
+
+
+# ============================================================
 # استخراج کارکرد
-# =========================
+# ============================================================
 
 def extract_mileage(obj):
 
@@ -419,11 +682,14 @@ def extract_mileage(obj):
         json_to_text(obj)
     )
 
+    if not text:
+        return None
+
     patterns = [
 
-        r"کارکرد.{0,30}?(\d[\d,]*)",
+        r"کارکرد.{0,50}?(\d[\d,]*)\s*کیلومتر",
 
-        r"کارکرد.{0,30}?(\d+)\s*کیلومتر",
+        r"کارکرد.{0,50}?(\d[\d,]*)",
 
         r"(\d[\d,]*)\s*کیلومتر",
 
@@ -432,32 +698,35 @@ def extract_mileage(obj):
 
     for pattern in patterns:
 
-        match = re.search(
+        matches = re.findall(
             pattern,
             text
         )
 
-        if match:
+        for value_text in matches:
 
-            value = (
-                match.group(1)
-                .replace(",", "")
+            value = clean_number(
+                value_text
             )
 
-            try:
+            if value is None:
+                continue
 
-                return int(value)
+            value = int(value)
 
-            except ValueError:
-
-                pass
+            if (
+                MIN_VALID_MILEAGE
+                <= value
+                <= MAX_VALID_MILEAGE
+            ):
+                return value
 
     return None
 
 
-# =========================
-# استخراج زمان آگهی
-# =========================
+# ============================================================
+# استخراج زمان
+# ============================================================
 
 def extract_time(post, details):
 
@@ -476,30 +745,30 @@ def extract_time(post, details):
         json_to_text(details),
     ]
 
+    patterns = [
+
+        r"لحظاتی پیش",
+
+        r"دقایقی پیش",
+
+        r"\d+\s*دقیقه پیش",
+
+        r"\d+\s*ساعت پیش",
+
+        r"دیروز",
+
+        r"پریروز",
+
+        r"\d+\s*روز پیش",
+
+        r"هفته",
+    ]
+
     for candidate in candidates:
 
         text = normalize(
             candidate
         )
-
-        patterns = [
-
-            r"لحظاتی پیش",
-
-            r"دقایقی پیش",
-
-            r"\d+\s*دقیقه پیش",
-
-            r"\d+\s*ساعت پیش",
-
-            r"دیروز",
-
-            r"پریروز",
-
-            r"\d+\s*روز پیش",
-
-            r"هفته",
-        ]
 
         for pattern in patterns:
 
@@ -509,21 +778,22 @@ def extract_time(post, details):
             )
 
             if match:
+
                 return match.group(0)
 
     return "نامشخص"
 
 
-# =========================
+# ============================================================
 # فرمت قیمت
-# =========================
+# ============================================================
 
 def format_price(value):
 
     if value is None:
         return "نامشخص"
 
-    million = value / 1_000_000
+    million = float(value) / 1_000_000
 
     if million.is_integer():
 
@@ -538,9 +808,9 @@ def format_price(value):
     )
 
 
-# =========================
+# ============================================================
 # فرمت کارکرد
-# =========================
+# ============================================================
 
 def format_mileage(value):
 
@@ -552,9 +822,9 @@ def format_mileage(value):
     )
 
 
-# =========================
-# ساخت لینک
-# =========================
+# ============================================================
+# لینک آگهی
+# ============================================================
 
 def post_url(token):
 
@@ -564,26 +834,225 @@ def post_url(token):
     )
 
 
-# =========================
-# اصلی
-# =========================
+# ============================================================
+# حذف آگهی‌های تکراری
+# ============================================================
+
+def deduplicate_posts(posts):
+
+    unique = []
+    seen = set()
+
+    for post in posts:
+
+        token = post.get(
+            "token"
+        )
+
+        if not token:
+            continue
+
+        if token in seen:
+            continue
+
+        seen.add(token)
+
+        unique.append(
+            post
+        )
+
+    return unique
+
+
+# ============================================================
+# ساخت گزارش آماری
+# ============================================================
+
+def calculate_statistics(results):
+
+    prices = [
+        item["price"]
+        for item in results
+        if (
+            item.get("price") is not None
+            and
+            MIN_VALID_PRICE
+            <= item["price"]
+            <= MAX_VALID_PRICE
+        )
+    ]
+
+    if not prices:
+
+        return {
+            "count": len(results),
+            "priced_count": 0,
+            "minimum": None,
+            "maximum": None,
+            "average": None,
+            "median": None,
+        }
+
+    return {
+        "count": len(results),
+
+        "priced_count":
+            len(prices),
+
+        "minimum":
+            min(prices),
+
+        "maximum":
+            max(prices),
+
+        "average":
+            statistics.mean(prices),
+
+        "median":
+            statistics.median(prices),
+    }
+
+
+# ============================================================
+# ساخت متن گزارش
+# ============================================================
+
+def build_report(results):
+
+    stats = calculate_statistics(
+        results
+    )
+
+    header = (
+        "🚗 گزارش بازار خودرو\n\n"
+        "📍 اصفهان\n"
+        "🚘 تیبا ۲ مدل ۱۴۰۰\n\n"
+        "━━━━━━━━━━━━━━\n\n"
+        f"🔎 تعداد کل آگهی‌های منطبق: "
+        f"{stats['count']}\n"
+        f"💵 دارای قیمت معتبر: "
+        f"{stats['priced_count']}\n\n"
+    )
+
+    if stats["priced_count"]:
+
+        header += (
+            "📊 آمار کل نتایج\n\n"
+
+            f"⬇️ کمترین قیمت: "
+            f"{format_price(stats['minimum'])}\n"
+
+            f"⬆️ بیشترین قیمت: "
+            f"{format_price(stats['maximum'])}\n"
+
+            f"💰 میانگین قیمت: "
+            f"{format_price(stats['average'])}\n"
+
+            f"📊 میانه قیمت: "
+            f"{format_price(stats['median'])}\n\n"
+
+            "━━━━━━━━━━━━━━\n\n"
+        )
+
+    else:
+
+        header += (
+            "❌ قیمت معتبر برای آگهی‌ها پیدا نشد.\n\n"
+            "━━━━━━━━━━━━━━\n\n"
+        )
+
+    header += (
+        "📋 تمام آگهی‌های منطبق:\n\n"
+    )
+
+    messages = []
+
+    current_message = header
+
+    for index, item in enumerate(
+        results,
+        1
+    ):
+
+        block = (
+            f"{index}. 🚘 "
+            f"{item['title']}\n"
+
+            f"💰 قیمت: "
+            f"{format_price(item['price'])}\n"
+
+            f"🛣 کارکرد: "
+            f"{format_mileage(item['mileage'])}\n"
+
+            f"📍 {item['district']}\n"
+
+            f"⏰ {item['time']}\n"
+
+            f"🔗 {item['url']}\n\n"
+        )
+
+        # Telegram limit = 4096
+        # کمی حاشیه امن در نظر می‌گیریم.
+        if (
+            len(current_message)
+            + len(block)
+            > 3800
+        ):
+
+            messages.append(
+                current_message
+            )
+
+            current_message = (
+                "📋 ادامه آگهی‌ها:\n\n"
+            )
+
+        current_message += block
+
+    if current_message.strip():
+
+        messages.append(
+            current_message
+        )
+
+    return messages
+
+
+# ============================================================
+# اجرای اصلی
+# ============================================================
 
 def main():
 
     print()
     print(
-        "===================================="
+        "========================================"
     )
     print(
         "Divar Tiba 2 Model 1400 Monitor"
     )
     print(
-        "===================================="
+        "========================================"
     )
 
     print(
+        "City ID:",
+        CITY_ID
+    )
+
+    print(
+        "Search:",
+        SEARCH_QUERY
+    )
+
+    print()
+    print(
         "Searching Divar..."
     )
+
+    # --------------------------------------------------------
+    # جستجو
+    # --------------------------------------------------------
 
     data = search_divar()
 
@@ -592,9 +1061,29 @@ def main():
     )
 
     print(
-        "Total search results:",
+        "Raw search results:",
         len(posts)
     )
+
+    # حذف تکراری‌ها
+    posts = deduplicate_posts(
+        posts
+    )
+
+    print(
+        "Unique search results:",
+        len(posts)
+    )
+
+    if MAX_RESULTS is not None:
+
+        posts = posts[
+            :MAX_RESULTS
+        ]
+
+    # --------------------------------------------------------
+    # پردازش
+    # --------------------------------------------------------
 
     all_results = []
 
@@ -603,69 +1092,127 @@ def main():
         1
     ):
 
+        print()
         print(
-            f"[{index}/{len(posts)}] "
-            f"{post['title']}"
+            f"[{index}/{len(posts)}]"
         )
+
+        print(
+            "Title:",
+            post["title"]
+        )
+
+        # ----------------------------------------------------
+        # ابتدا عنوان را بررسی می‌کنیم
+        # ----------------------------------------------------
+
+        title_text = normalize(
+            post["title"]
+        )
+
+        if not is_tiba_2(
+            title_text
+        ):
+
+            print(
+                " -> Not Tiba 2"
+            )
+
+            continue
+
+        # اگر عنوان مدل 1400 داشت، نیازی نیست
+        # برای تشخیص مدل فقط به JSON متکی باشیم.
+        title_has_model = is_model_1400(
+            title_text
+        )
+
+        # ----------------------------------------------------
+        # جزئیات
+        # ----------------------------------------------------
 
         details = get_details(
             post["token"]
         )
 
-        # متن کامل آگهی
-        full_text = (
-            normalize(
-                post["title"]
-            )
-            + " "
-            + normalize(
-                json_to_text(details)
-            )
+        detail_text = normalize(
+            json_to_text(details)
         )
 
-        # فیلتر تیبا ۲
-        if not is_tiba_2(
-            full_text
-        ):
+        full_text = (
+            title_text
+            + " "
+            + detail_text
+        )
 
-            print(
-                "  -> Not Tiba 2"
-            )
+        # ----------------------------------------------------
+        # مدل 1400
+        # ----------------------------------------------------
 
-            continue
+        if not title_has_model:
 
-        # فیلتر مدل ۱۴۰۰
-        if not is_model_1400(
-            full_text
-        ):
+            if not is_model_1400(
+                full_text
+            ):
 
-            print(
-                "  -> Not Model 1400"
-            )
+                print(
+                    " -> Not Model 1400"
+                )
 
-            continue
+                continue
 
-        price = extract_price(
+        # ----------------------------------------------------
+        # قیمت
+        # ----------------------------------------------------
+
+        # مهم:
+        # ابتدا فقط قیمت POST_ROW را می‌خوانیم.
+        price = extract_price_from_search_text(
             post["price_text"]
         )
 
-        # اگر قیمت از ردیف پیدا نشد
+        # اگر نبود، فقط فیلدهای صریح قیمت JSON بررسی می‌شوند.
         if price is None:
 
-            price = extract_price(
-                json_to_text(
-                    details
-                )
+            price = extract_price_from_explicit_fields(
+                details
             )
+
+        # قیمت غیرمنطقی را حذف می‌کنیم.
+        if price is not None:
+
+            if not (
+                MIN_VALID_PRICE
+                <= price
+                <= MAX_VALID_PRICE
+            ):
+
+                print(
+                    " -> Invalid price:",
+                    price
+                )
+
+                price = None
+
+        # ----------------------------------------------------
+        # کارکرد
+        # ----------------------------------------------------
 
         mileage = extract_mileage(
             details
         )
 
+        # ----------------------------------------------------
+        # زمان
+        # ----------------------------------------------------
+
         time_text = extract_time(
             post,
             details
         )
+
+        # ----------------------------------------------------
+        # منطقه
+        # ----------------------------------------------------
 
         district = (
             post.get(
@@ -676,6 +1223,10 @@ def main():
             )
             or "نامشخص"
         )
+
+        # ----------------------------------------------------
+        # نتیجه
+        # ----------------------------------------------------
 
         result = {
 
@@ -708,179 +1259,138 @@ def main():
         )
 
         print(
-            "  -> MATCH"
+            " -> MATCH"
         )
 
         print(
-            "     Price:",
+            "    Price:",
             format_price(price)
         )
 
         print(
-            "     Mileage:",
+            "    Mileage:",
             format_mileage(mileage)
         )
 
-        time.sleep(0.2)
+        print(
+            "    District:",
+            district
+        )
+
+        time.sleep(0.15)
+
+    # --------------------------------------------------------
+    # حذف تکراری‌های نهایی
+    # --------------------------------------------------------
+
+    unique_results = []
+
+    seen_tokens = set()
+
+    for item in all_results:
+
+        token = item["token"]
+
+        if token in seen_tokens:
+            continue
+
+        seen_tokens.add(
+            token
+        )
+
+        unique_results.append(
+            item
+        )
+
+    all_results = unique_results
+
+    # --------------------------------------------------------
+    # آمار
+    # --------------------------------------------------------
+
+    stats = calculate_statistics(
+        all_results
+    )
 
     print()
     print(
-        "FILTERED RESULTS:",
-        len(all_results)
+        "========================================"
     )
 
-    # =========================
-    # آمار کل نتایج
-    # =========================
-
-    priced_results = [
-        item
-        for item in all_results
-        if item["price"] is not None
-    ]
-
-    if priced_results:
-
-        prices = [
-            item["price"]
-            for item in priced_results
-        ]
-
-        minimum = min(
-            prices
-        )
-
-        maximum = max(
-            prices
-        )
-
-        average = statistics.mean(
-            prices
-        )
-
-        median = statistics.median(
-            prices
-        )
-
-    else:
-
-        minimum = None
-        maximum = None
-        average = None
-        median = None
-
-    # =========================
-    # گزارش
-    # =========================
-
-    header = (
-        "🚗 گزارش بازار خودرو\n\n"
-        "📍 اصفهان\n"
-        "🚘 تیبا ۲ مدل ۱۴۰۰\n\n"
-        "━━━━━━━━━━━━━━\n\n"
-        f"🔎 تعداد کل آگهی‌های "
-        f"منطبق: {len(all_results)}\n"
-        f"💵 دارای قیمت: "
-        f"{len(priced_results)}\n\n"
+    print(
+        "MATCHING POSTS:",
+        stats["count"]
     )
 
-    if priced_results:
-
-        header += (
-            "📊 آمار کل نتایج\n\n"
-            f"⬇️ کمترین قیمت: "
-            f"{format_price(minimum)}\n"
-            f"⬆️ بیشترین قیمت: "
-            f"{format_price(maximum)}\n"
-            f"💰 میانگین قیمت: "
-            f"{format_price(average)}\n"
-            f"📊 میانه قیمت: "
-            f"{format_price(median)}\n\n"
-            "━━━━━━━━━━━━━━\n\n"
-        )
-
-    else:
-
-        header += (
-            "❌ برای آگهی‌های منطبق "
-            "قیمت قابل محاسبه پیدا نشد.\n\n"
-            "━━━━━━━━━━━━━━\n\n"
-        )
-
-    header += (
-        "📋 تمام آگهی‌های منطبق:\n\n"
+    print(
+        "PRICED POSTS:",
+        stats["priced_count"]
     )
 
-    # =========================
-    # اضافه کردن تمام آگهی‌ها
-    # =========================
+    if stats["priced_count"]:
 
-    messages = []
-
-    current_message = header
-
-    for index, item in enumerate(
-        all_results,
-        1
-    ):
-
-        price_text = format_price(
-            item["price"]
-        )
-
-        mileage_text = format_mileage(
-            item["mileage"]
-        )
-
-        block = (
-            f"{index}. 🚘 "
-            f"{item['title']}\n"
-            f"💰 قیمت: "
-            f"{price_text}\n"
-            f"🛣 کارکرد: "
-            f"{mileage_text}\n"
-            f"📍 {item['district']}\n"
-            f"⏰ {item['time']}\n"
-            f"🔗 {item['url']}\n\n"
-        )
-
-        # محدودیت تلگرام حدود 4096 کاراکتر است
-        if (
-            len(current_message)
-            + len(block)
-            > 3800
-        ):
-
-            messages.append(
-                current_message
+        print(
+            "MIN:",
+            format_price(
+                stats["minimum"]
             )
-
-            current_message = (
-                "📋 ادامه آگهی‌ها:\n\n"
-            )
-
-        current_message += block
-
-    if current_message.strip():
-
-        messages.append(
-            current_message
         )
 
-    # =========================
-    # ارسال
-    # =========================
+        print(
+            "MAX:",
+            format_price(
+                stats["maximum"]
+            )
+        )
 
-    if not messages:
+        print(
+            "AVERAGE:",
+            format_price(
+                stats["average"]
+            )
+        )
 
-        send_telegram(
+        print(
+            "MEDIAN:",
+            format_price(
+                stats["median"]
+            )
+        )
+
+    print(
+        "========================================"
+    )
+
+    # --------------------------------------------------------
+    # گزارش تلگرام
+    # --------------------------------------------------------
+
+    if not all_results:
+
+        message = (
             "🚗 گزارش دیوار\n\n"
+
             "📍 اصفهان\n"
+
             "🚘 تیبا ۲ مدل ۱۴۰۰\n\n"
+
             "❌ هیچ آگهی منطبقی پیدا نشد."
         )
 
+        send_telegram(
+            message
+        )
+
     else:
+
+        messages = build_report(
+            all_results
+        )
+
+        print(
+            "Telegram messages:",
+            len(messages)
+        )
 
         for message in messages:
 
@@ -892,16 +1402,19 @@ def main():
 
     print()
     print(
-        "===================================="
+        "========================================"
     )
     print(
         "REPORT COMPLETED"
     )
     print(
-        "===================================="
+        "========================================"
     )
 
 
+# ============================================================
+# Entry point
+# ============================================================
+
 if __name__ == "__main__":
     main()
-
