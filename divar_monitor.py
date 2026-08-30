@@ -34,7 +34,7 @@ def search_divar():
     payload = {
         "city_ids": ["4"],
         "categories": ["light"],
-        "query": "تیبا 2",
+        "query": "تیبا 2 مدل 1400",
     }
 
     r = requests.post(
