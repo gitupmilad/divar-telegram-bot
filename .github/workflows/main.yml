@@ -1,47 +1,30 @@
-name: Test Divar Search
+name: Daily Divar Tiba 2 Monitor
 
 on:
   workflow_dispatch:
+  schedule:
+    # 06:00 UTC = 09:30 Iran
+    - cron: "0 6 * * *"
 
 jobs:
-  search-divar:
+  monitor:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Search Divar
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
         run: |
-          python - <<'PY'
-          import requests
-          import re
+          pip install requests
 
-          url = "https://divar.ir/s/isfahan"
-
-          headers = {
-              "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
-              "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8"
-          }
-
-          response = requests.get(url, headers=headers, timeout=30)
-
-          print("HTTP Status:", response.status_code)
-          print("Page size:", len(response.text))
-
-          # Search for Tiba-related text
-          text = response.text
-
-          matches = re.findall(
-              r'.{0,100}(?:تیبا|Tiba).{0,200}',
-              text,
-              re.IGNORECASE
-          )
-
-          print("\n===== TIBA RESULTS =====")
-
-          if matches:
-              for i, match in enumerate(matches[:20], 1):
-                  print(f"\n{i}. {match}")
-          else:
-              print("No Tiba results found in the raw page.")
-
-          print("\n===== TEST FINISHED =====")
-          PY
+      - name: Run Divar monitor
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python divar_monitor.py
