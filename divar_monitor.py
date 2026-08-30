@@ -1,6 +1,6 @@
 import os
-import json
 import requests
+import json
 
 SEARCH_URL = "https://api.divar.ir/v8/postlist/w/search"
 
@@ -11,6 +11,8 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Content-Type": "application/json",
     "Accept": "application/json",
+    "Origin": "https://divar.ir",
+    "Referer": "https://divar.ir/",
 }
 
 
@@ -31,10 +33,39 @@ def send_telegram(text):
 
 
 def search_divar():
+
     payload = {
         "city_ids": ["4"],
-        "categories": ["light"],
-        "query": "تیبا 2 مدل 1400",
+
+        "search_data": {
+            "form_data": {
+                "data": {
+                    "category": {
+                        "str": {
+                            "value": "ROOT"
+                        }
+                    },
+                    "query": {
+                        "str": {
+                            "value": "تیبا 2"
+                        }
+                    }
+                }
+            },
+
+            "server_payload": {
+                "@type": "type.googleapis.com/widgets.SearchData.ServerPayload",
+                "additional_form_data": {
+                    "data": {
+                        "sort": {
+                            "str": {
+                                "value": "sort_date"
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     r = requests.post(
@@ -44,6 +75,8 @@ def search_divar():
         timeout=30,
     )
 
+    print("STATUS:", r.status_code)
+
     r.raise_for_status()
 
     return r.json()
@@ -51,15 +84,13 @@ def search_divar():
 
 def main():
 
-    print("Searching Divar for Tiba 2 in Isfahan...")
+    print("Searching real Divar text search...")
 
     data = search_divar()
 
-    widgets = data.get("list_widgets", [])
-
     posts = []
 
-    for widget in widgets:
+    for widget in data.get("list_widgets", []):
 
         if widget.get("widget_type") != "POST_ROW":
             continue
@@ -68,39 +99,40 @@ def main():
         action = item.get("action", {})
         payload = action.get("payload", {})
 
-        post = {
-            "title": item.get("title"),
-            "price": item.get("middle_description_text"),
-            "location": item.get("bottom_description_text"),
-            "token": payload.get("token"),
-        }
+        posts.append({
+            "title": item.get("title", ""),
+            "price": item.get("middle_description_text", ""),
+            "location": item.get("bottom_description_text", ""),
+            "token": payload.get("token", "")
+        })
 
-        posts.append(post)
-
-    print("POST COUNT:", len(posts))
+    print("RESULT COUNT:", len(posts))
 
     print(
         json.dumps(
-            posts,
+            posts[:20],
             ensure_ascii=False,
             indent=2
         )
     )
 
-    # فقط برای اینکه نتیجه را در Telegram هم ببینیم
-    message = "🔎 تست جستجوی تیبا ۲ در اصفهان\n\n"
+    message = "🔎 تست جستجوی واقعی Divar\n\n"
 
     if not posts:
-        message += "هیچ آگهی‌ای از API برنگشت."
+
+        message += "❌ هیچ نتیجه‌ای دریافت نشد."
+
     else:
+
         message += f"تعداد نتایج: {len(posts)}\n\n"
 
         for i, post in enumerate(posts[:10], 1):
+
             message += (
                 f"{i}. {post['title']}\n"
                 f"💰 {post['price']}\n"
                 f"📍 {post['location']}\n"
-                f"Token: {post['token']}\n\n"
+                f"🔑 {post['token']}\n\n"
             )
 
     send_telegram(message)
